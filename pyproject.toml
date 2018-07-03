@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "cagr-crawler"
+version = "0.1.0"
+description = ""
+authors = ["Cauê Baasch de Souza <cauebs@pm.me>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.6"
+requests = "^2.19"
+bs4 = "^0.0.1"
+
+[tool.poetry.dev-dependencies]
+flake8 = "^3.5"
+autopep8 = "^1.3"
+jedi = "^0.12.1"
+
+[tool.poetry.scripts]
+cagr-crawler = "cagr_crawler.crawler:main"
