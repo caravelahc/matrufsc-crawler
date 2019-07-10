@@ -41,7 +41,7 @@ class StopMessage:
     pass
 
 
-def crawl(campus: Campus, semester: str, queue: Queue, logger):
+def crawl(campus: Campus, semester: str, send_queue: Queue, logger):
     logger.info(f'Starting crawler')
 
     logger.debug(f'Requesting main page to get cookies')
@@ -60,7 +60,7 @@ def crawl(campus: Campus, semester: str, queue: Queue, logger):
     previous = ''
     for page in count(1):
         form_data['formBusca:dataScroller1'] = page
-        logger.debug(f'Requesting page {page}')
+        logger.info(f'Requesting page {page}')
         response = requests.post(CAGR_URL, form_data, cookies=cookies)
         logger.debug(f'Received page {page}')
 
@@ -72,29 +72,29 @@ def crawl(campus: Campus, semester: str, queue: Queue, logger):
             raise Exception(message)
 
         if response.text == previous:
-            logger.debug(f'Received repeated page')
+            logger.warning(f'Received repeated page')
             break
 
-        logger.debug(f'Pushing contents of page {page} to queue')
-        queue.put(response.text)
+        logger.info(f'Pushing contents of page {page} to queue')
+        send_queue.put(response.text)
         previous = response.text
 
     logger.debug(f'Pushing StopMessage to queue')
-    queue.put(StopMessage)
+    send_queue.put(StopMessage)
     logger.info(f'Stopping crawler')
 
 
-def parse(campus: Campus, semester: str, queue: Queue, logger):
+def parse(campus: Campus, semester: str, receive_queue: Queue, logger):
     logger.info(f'Starting parser')
 
     while True:
         logger.debug(f'Waiting for message in queue')
-        message = queue.get()
+        message = receive_queue.get()
         logger.debug(f'Popping message from queue')
 
         if message is StopMessage:
             logger.debug(f'Got StopMessage from queue')
-            queue.task_done()
+            receive_queue.task_done()
             break
 
         soup = BeautifulSoup(message, 'html.parser')
@@ -112,7 +112,7 @@ def parse(campus: Campus, semester: str, queue: Queue, logger):
             # TODO: export these in some way
 
         logger.debug(f'Got {len(rows)} entries in page contents')
-        queue.task_done()
+        receive_queue.task_done()
 
     logger.info(f'Stopping parser')
 
@@ -150,7 +150,7 @@ def run(campus: Campus, semester: str, logger):
 
 def main():
     logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     handler = logging.FileHandler('crawler.log', mode='w')
 
