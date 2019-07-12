@@ -1,10 +1,9 @@
 [tool.poetry]
-name = "cagr-crawler"
+name = "matrufsc-crawler"
 version = "0.1.0"
 description = ""
 authors = ["Cauê Baasch de Souza <cauebs@pm.me>"]
 license = "MIT"
-readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.7"
@@ -12,8 +11,6 @@ requests = "^2.22"
 beautifulsoup4 = "^4.7"
 
 [tool.poetry.dev-dependencies]
-flake8 = "^3.7"
-jedi = "^0.14.0"
 
 [tool.poetry.scripts]
-cagr-crawler = "cagr_crawler.crawler:main"
+matrufsc-crawler = "matrufsc_crawler.__main__:main"
