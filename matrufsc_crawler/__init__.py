@@ -14,18 +14,15 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-handler = logging.FileHandler('crawler.log', mode='w')
+handler = logging.FileHandler("crawler.log", mode="w")
 
-formatter = logging.Formatter(
-    '%(asctime)s - %(message)s',
-    datefmt=r'%Y/%m/%d %T'
-)
+formatter = logging.Formatter("%(asctime)s - %(message)s", datefmt=r"%Y/%m/%d %T")
 
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
-CAGR_URL = 'https://cagr.sistemas.ufsc.br/modules/comunidade/cadastroTurmas/'
+CAGR_URL = "https://cagr.sistemas.ufsc.br/modules/comunidade/cadastroTurmas/"
 
 
 class Campus(Enum):
@@ -38,53 +35,49 @@ class Campus(Enum):
 
 
 def _available_semesters(logger):
-    logger.debug('Requesting main page to get semesters')
+    logger.debug("Requesting main page to get semesters")
     html = requests.get(CAGR_URL).text
-    logger.debug('Received main page')
+    logger.debug("Received main page")
 
-    soup = BeautifulSoup(html, 'html.parser')
-    select = soup.find('select', id='formBusca:selectSemestre')
+    soup = BeautifulSoup(html, "html.parser")
+    select = soup.find("select", id="formBusca:selectSemestre")
 
-    logger.debug('Returning available semesters')
+    logger.debug("Returning available semesters")
 
-    return [
-        option['value']
-        for option in select.find_all('option')
-    ]
+    return [option["value"] for option in select.find_all("option")]
 
 
 class StopMessage:
     pass
 
 
-RESULTS_COUNT_REGEX = re.compile(r'(\d+)</span> resultados foram encontrados')
+RESULTS_COUNT_REGEX = re.compile(r"(\d+)</span> resultados foram encontrados")
 
 
 def _crawl(campus: Campus, semester: str, send_queue: Queue):
-    label = f'crawler_{campus.name}_{semester}'
+    label = f"crawler_{campus.name}_{semester}"
 
-    logger.info(f'[{label}] Starting crawler')
+    logger.info(f"[{label}] Starting crawler")
     session = requests.Session()
 
-    logger.debug(f'[{label}] Requesting main page to get cookies')
+    logger.debug(f"[{label}] Requesting main page to get cookies")
     session.post(CAGR_URL)
-    logger.debug(f'[{label}] Received main page')
+    logger.debug(f"[{label}] Received main page")
 
     form_data = {
-        'formBusca': 'formBusca',
-        'javax.faces.ViewState': 'j_id1',
-
-        'formBusca:selectSemestre': semester,
-        'formBusca:selectCampus': campus.value,
+        "formBusca": "formBusca",
+        "javax.faces.ViewState": "j_id1",
+        "formBusca:selectSemestre": semester,
+        "formBusca:selectCampus": campus.value,
     }
 
     # we don't use the first page for arcane reasons
-    form_data['formBusca:dataScroller1'] = 2
+    form_data["formBusca:dataScroller1"] = 2
     second_page = session.post(CAGR_URL, form_data)
 
     results_count_matches = RESULTS_COUNT_REGEX.findall(second_page.text)
     if not results_count_matches:
-        message = f'[{label}] Could not find result count.'
+        message = f"[{label}] Could not find result count."
         logger.error(message)
         send_queue.put(StopMessage)
         raise Exception(message)
@@ -92,63 +85,74 @@ def _crawl(campus: Campus, semester: str, send_queue: Queue):
     results_count = int(results_count_matches[0])
     pages_count = ceil(results_count / 50)
 
-    previous = ''
+    previous = ""
     for page_index in range(pages_count):
         page = page_index + 1
 
-        form_data['formBusca:dataScroller1'] = page
-        logger.info(f'[{label}] Requesting page {page}')
+        form_data["formBusca:dataScroller1"] = page
+        logger.info(f"[{label}] Requesting page {page}")
 
         response = session.post(CAGR_URL, form_data)
-        logger.debug(f'[{label}] Received page {page}')
+        logger.debug(f"[{label}] Received page {page}")
 
         if response.url != CAGR_URL:
-            message = (
-                f'[{label}] Received {response.url} instead of page {page}'
-            )
+            message = f"[{label}] Received {response.url} instead of page {page}"
             logger.error(message)
             send_queue.put(StopMessage)
             raise Exception(message)
 
         if response.text == previous:
-            logger.warning(f'[{label}] Received repeated page')
+            logger.warning(f"[{label}] Received repeated page")
             break
 
-        logger.info(f'[{label}] Pushing contents of page {page} to queue')
+        logger.info(f"[{label}] Pushing contents of page {page} to queue")
         send_queue.put(response.text)
         previous = response.text
 
-    logger.debug(f'[{label}] Pushing StopMessage to queue')
+    logger.debug(f"[{label}] Pushing StopMessage to queue")
     send_queue.put(StopMessage)
-    logger.info(f'[{label}] Stopping crawler')
+    logger.info(f"[{label}] Stopping crawler")
 
 
 def _parse(campus: Campus, semester: str, receive_queue: Queue, output: dict):
-    label = f'parser_{campus.name}_{semester}'
+    label = f"parser_{campus.name}_{semester}"
 
-    logger.info(f'[{label}] Starting parser')
+    logger.info(f"[{label}] Starting parser")
 
     while True:
-        logger.debug(f'[{label}] Waiting for message in queue')
+        logger.debug(f"[{label}] Waiting for message in queue")
         message = receive_queue.get()
-        logger.debug(f'[{label}] Popping message from queue')
+        logger.debug(f"[{label}] Popping message from queue")
 
         if message is StopMessage:
-            logger.debug(f'[{label}] Got StopMessage from queue')
+            logger.debug(f"[{label}] Got StopMessage from queue")
             receive_queue.task_done()
             break
 
-        soup = BeautifulSoup(message, 'html.parser')
-        table = soup.find('tbody', id='formBusca:dataTable:tb')
-        rows = table.find_all('tr')
+        soup = BeautifulSoup(message, "html.parser")
+        table = soup.find("tbody", id="formBusca:dataTable:tb")
+        rows = table.find_all("tr")
 
         for row in rows:
-            cells = row.find_all('td')
-            fields = (x.get_text('\n', strip=True) for x in cells)
+            cells = row.find_all("td")
+            fields = (x.get_text("\n", strip=True) for x in cells)
 
-            (_, _, _, course_id, class_id, course_name, class_hours,
-             capacity, enrolled, special, _, waiting,
-             times, professors) = fields
+            (
+                _,
+                _,
+                _,
+                course_id,
+                class_id,
+                course_name,
+                class_hours,
+                capacity,
+                enrolled,
+                special,
+                _,
+                waiting,
+                times,
+                professors,
+            ) = fields
 
             course_name, *class_labels = course_name.splitlines()
             class_hours = int(class_hours) if class_hours else None
@@ -160,57 +164,51 @@ def _parse(campus: Campus, semester: str, receive_queue: Queue, output: dict):
             professors = professors.splitlines()
 
             course = output.setdefault(course_id, {})
-            course['course_name'] = course_name
-            course['class_hours'] = class_hours
+            course["course_name"] = course_name
+            course["class_hours"] = class_hours
 
-            classes = course.setdefault('classes', {})
+            classes = course.setdefault("classes", {})
             classes[class_id] = {
-                'class_labels': [l.strip('[]') for l in class_labels],
-                'capacity': capacity,
-                'enrolled': enrolled,
-                'special': special,
-                'waiting': waiting,
-                'times': times,
-                'professors': professors,
+                "class_labels": [l.strip("[]") for l in class_labels],
+                "capacity": capacity,
+                "enrolled": enrolled,
+                "special": special,
+                "waiting": waiting,
+                "times": times,
+                "professors": professors,
             }
 
-        logger.debug(f'[{label}] Got {len(rows)} entries in page contents')
+        logger.debug(f"[{label}] Got {len(rows)} entries in page contents")
         receive_queue.task_done()
 
-    logger.info(f'[{label}] Stopping parser')
+    logger.info(f"[{label}] Stopping parser")
 
 
 def _start(campus: Campus, semester: str, outputs: dict):
-    label = f'starter_{campus.name}_{semester}'
+    label = f"starter_{campus.name}_{semester}"
 
-    logger.info(f'[{label}] Creating queue, crawler and parser')
+    logger.info(f"[{label}] Creating queue, crawler and parser")
 
     queue = Queue()
     args = (campus, semester, queue)
 
-    crawler = Thread(
-        target=_crawl,
-        args=args,
-    )
+    crawler = Thread(target=_crawl, args=args)
 
     output = outputs.setdefault(semester, {}).setdefault(campus.name, {})
 
-    parser = Thread(
-        target=_parse,
-        args=(*args, output),
-    )
+    parser = Thread(target=_parse, args=(*args, output))
 
     crawler.start()
     parser.start()
 
     crawler.join()
-    logger.debug(f'[{label}] Crawler stopped')
+    logger.debug(f"[{label}] Crawler stopped")
 
     queue.join()
-    logger.debug(f'[{label}] Queue done')
+    logger.debug(f"[{label}] Queue done")
 
     parser.join()
-    logger.debug(f'[{label}] Parser stopped')
+    logger.debug(f"[{label}] Parser stopped")
 
 
 def run(n_semesters: int = 2):
@@ -218,10 +216,7 @@ def run(n_semesters: int = 2):
     semesters = _available_semesters(logger)[:n_semesters]
 
     threads = [
-        Thread(
-            target=_start,
-            args=(campus, semester, outputs),
-        )
+        Thread(target=_start, args=(campus, semester, outputs))
         for campus in Campus
         for semester in semesters
     ]
