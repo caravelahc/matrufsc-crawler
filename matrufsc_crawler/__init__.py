@@ -1,28 +1,17 @@
-import logging
+import asyncio
+import json
 import re
 
 from enum import Enum
 from math import ceil
-from queue import Queue
-from threading import Thread
+from typing import List, Dict, Union, Optional, AsyncIterator
 
-import requests
-
+from aiohttp import ClientSession
 from bs4 import BeautifulSoup
+from yarl import URL
 
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-handler = logging.FileHandler("crawler.log", mode="w")
-
-formatter = logging.Formatter("%(asctime)s - %(message)s", datefmt=r"%Y/%m/%d %T")
-
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
-
-CAGR_URL = "https://cagr.sistemas.ufsc.br/modules/comunidade/cadastroTurmas/"
+CAGR = URL("https://cagr.sistemas.ufsc.br/modules/comunidade/cadastroTurmas/")
 
 
 class Campus(Enum):
@@ -34,197 +23,167 @@ class Campus(Enum):
     BLN = 5
 
 
-def _available_semesters(logger):
-    logger.debug("Requesting main page to get semesters")
-    html = requests.get(CAGR_URL).text
-    logger.debug("Received main page")
+async def _available_semesters() -> List[str]:
+    async with ClientSession() as session:
+        response = await session.get(CAGR)
+        contents = await response.text()
 
-    soup = BeautifulSoup(html, "html.parser")
-    select = soup.find("select", id="formBusca:selectSemestre")
-
-    logger.debug("Returning available semesters")
+    document = BeautifulSoup(contents, "html.parser")
+    select = document.find("select", id="formBusca:selectSemestre")
 
     return [option["value"] for option in select.find_all("option")]
-
-
-class StopMessage:
-    pass
 
 
 RESULTS_COUNT_REGEX = re.compile(r"(\d+)</span> resultados foram encontrados")
 
 
-def _crawl(campus: Campus, semester: str, send_queue: Queue):
-    label = f"crawler_{campus.name}_{semester}"
-
-    logger.info(f"[{label}] Starting crawler")
-    session = requests.Session()
-
-    logger.debug(f"[{label}] Requesting main page to get cookies")
-    session.post(CAGR_URL)
-    logger.debug(f"[{label}] Received main page")
-
-    form_data = {
-        "formBusca": "formBusca",
-        "javax.faces.ViewState": "j_id1",
-        "formBusca:selectSemestre": semester,
-        "formBusca:selectCampus": campus.value,
-    }
-
+async def _pages_to_crawl(
+    session: ClientSession, form_data: Dict[str, Union[str, int]]
+) -> int:
     # we don't use the first page for arcane reasons
     form_data["formBusca:dataScroller1"] = 2
-    second_page = session.post(CAGR_URL, form_data)
+    second_page_response = await session.post(CAGR, data=form_data)
+    second_page_contents = await second_page_response.text()
 
-    results_count_matches = RESULTS_COUNT_REGEX.findall(second_page.text)
-    if not results_count_matches:
-        message = f"[{label}] Could not find result count."
-        logger.error(message)
-        send_queue.put(StopMessage)
-        raise Exception(message)
+    matches = RESULTS_COUNT_REGEX.findall(second_page_contents)
+    if not matches:
+        return 0
 
-    results_count = int(results_count_matches[0])
-    pages_count = ceil(results_count / 50)
-
-    previous = ""
-    for page_index in range(pages_count):
-        page = page_index + 1
-
-        form_data["formBusca:dataScroller1"] = page
-        logger.info(f"[{label}] Requesting page {page}")
-
-        response = session.post(CAGR_URL, form_data)
-        logger.debug(f"[{label}] Received page {page}")
-
-        if response.url != CAGR_URL:
-            message = f"[{label}] Received {response.url} instead of page {page}"
-            logger.error(message)
-            send_queue.put(StopMessage)
-            raise Exception(message)
-
-        if response.text == previous:
-            logger.warning(f"[{label}] Received repeated page")
-            break
-
-        logger.info(f"[{label}] Pushing contents of page {page} to queue")
-        send_queue.put(response.text)
-        previous = response.text
-
-    logger.debug(f"[{label}] Pushing StopMessage to queue")
-    send_queue.put(StopMessage)
-    logger.info(f"[{label}] Stopping crawler")
+    results_count = int(matches[0])
+    return ceil(results_count / 50)
 
 
-def _parse(campus: Campus, semester: str, receive_queue: Queue, output: dict):
-    label = f"parser_{campus.name}_{semester}"
+async def _fetch(campus: Campus, semester: str) -> AsyncIterator[str]:
+    async with ClientSession() as session:
+        await session.post(CAGR)
 
-    logger.info(f"[{label}] Starting parser")
+        form_data = {
+            "formBusca": "formBusca",
+            "javax.faces.ViewState": "j_id1",
+            "formBusca:selectSemestre": semester,
+            "formBusca:selectCampus": campus.value,
+        }
 
-    while True:
-        logger.debug(f"[{label}] Waiting for message in queue")
-        message = receive_queue.get()
-        logger.debug(f"[{label}] Popping message from queue")
+        pages_count = await _pages_to_crawl(session, form_data)
 
-        if message is StopMessage:
-            logger.debug(f"[{label}] Got StopMessage from queue")
-            receive_queue.task_done()
-            break
+        previous = ""
+        for page_index in range(1, pages_count + 1):
+            form_data["formBusca:dataScroller1"] = page_index
 
-        soup = BeautifulSoup(message, "html.parser")
-        table = soup.find("tbody", id="formBusca:dataTable:tb")
-        rows = table.find_all("tr")
+            response = await session.post(CAGR, data=form_data)
 
-        for row in rows:
-            cells = row.find_all("td")
-            fields = (x.get_text("\n", strip=True) for x in cells)
+            if response.url != CAGR:
+                raise Exception(
+                    f"Received unexpected URL '{response.url}'"
+                    f"instead of page {page_index} for ({campus}, {semester})"
+                )
 
-            (
-                _,
-                _,
-                _,
-                course_id,
-                class_id,
-                course_name,
-                class_hours,
-                capacity,
-                enrolled,
-                special,
-                _,
-                waiting,
-                times,
-                professors,
-            ) = fields
+            contents = await response.text()
 
-            course_name, *class_labels = course_name.splitlines()
-            class_hours = int(class_hours) if class_hours else None
-            capacity = int(capacity) if capacity else None
-            enrolled = int(enrolled) if enrolled else None
-            special = int(special) if special else None
-            waiting = int(waiting) if waiting else None
-            times = times.splitlines()
-            professors = professors.splitlines()
+            if contents == previous:
+                break
 
-            course = output.setdefault(course_id, {})
-            course["course_name"] = course_name
-            course["class_hours"] = class_hours
-
-            classes = course.setdefault("classes", {})
-            classes[class_id] = {
-                "class_labels": [l.strip("[]") for l in class_labels],
-                "capacity": capacity,
-                "enrolled": enrolled,
-                "special": special,
-                "waiting": waiting,
-                "times": times,
-                "professors": professors,
-            }
-
-        logger.debug(f"[{label}] Got {len(rows)} entries in page contents")
-        receive_queue.task_done()
-
-    logger.info(f"[{label}] Stopping parser")
+            yield contents
+            previous = contents
 
 
-def _start(campus: Campus, semester: str, outputs: dict):
-    label = f"starter_{campus.name}_{semester}"
-
-    logger.info(f"[{label}] Creating queue, crawler and parser")
-
-    queue = Queue()
-    args = (campus, semester, queue)
-
-    crawler = Thread(target=_crawl, args=args)
-
-    output = outputs.setdefault(semester, {}).setdefault(campus.name, {})
-
-    parser = Thread(target=_parse, args=(*args, output))
-
-    crawler.start()
-    parser.start()
-
-    crawler.join()
-    logger.debug(f"[{label}] Crawler stopped")
-
-    queue.join()
-    logger.debug(f"[{label}] Queue done")
-
-    parser.join()
-    logger.debug(f"[{label}] Parser stopped")
+TIME_PLACE_REGEX = re.compile(r"(\d)\.(\d{4})-(\d) / (.+)")
+TIME_SLOTS = [
+    "0730",
+    "0820",
+    "0910",
+    "1010",
+    "1100",
+    "1330",
+    "1420",
+    "1510",
+    "1620",
+    "1710",
+    "1830",
+    "1920",
+    "2020",
+    "2110",
+]
 
 
-def run(n_semesters: int = 2):
-    outputs = {}
-    semesters = _available_semesters(logger)[:n_semesters]
+def _parse_time_and_place(s: str):
+    match = TIME_PLACE_REGEX.match(s.strip())
+    if match is None:
+        return None
 
-    threads = [
-        Thread(target=_start, args=(campus, semester, outputs))
-        for campus in Campus
-        for semester in semesters
-    ]
+    weekday, time, duration, room = match.groups()
 
-    for t in threads:
-        t.start()
+    start = TIME_SLOTS.index(time)
+    end = start + int(duration)
 
-    for t in threads:
-        t.join()
+    return {
+        "weekday": int(weekday) - 2,  # turns monday into 0
+        "slots": TIME_SLOTS[start:end],
+        "room": room,
+    }
 
-    return outputs
+
+def _parse(contents: str, output: dict):
+    soup = BeautifulSoup(contents, "html.parser")
+    table = soup.find("tbody", id="formBusca:dataTable:tb")
+
+    for row in table.find_all("tr"):
+        cells = row.find_all("td")
+        fields = [x.get_text("\n", strip=True) for x in cells]
+
+        course_id = fields[3]
+        class_id = fields[4]
+
+        course_name, *class_labels = fields[5].splitlines()
+        class_labels = [l.strip("[]") for l in class_labels]
+
+        def parse_int(x: str) -> Optional[int]:
+            return int(x) if x else None
+
+        class_hours = parse_int(fields[6])
+        capacity = parse_int(fields[7])
+        enrolled = parse_int(fields[8])
+        special = parse_int(fields[9])
+        waiting = parse_int(fields[11])
+
+        times_and_places = fields[12].splitlines()
+        times_and_places = [_parse_time_and_place(s) for s in times_and_places]
+        professors = fields[13].splitlines()
+
+        course = output.setdefault(course_id, {})
+        course["name"] = course_name
+        course["class_hours"] = class_hours
+
+        classes = course.setdefault("classes", {})
+        classes[class_id] = {
+            "labels": class_labels,
+            "capacity": capacity,
+            "enrolled": enrolled,
+            "special": special,
+            "waiting": waiting,
+            "times_and_places": times_and_places,
+            "professors": professors,
+        }
+
+
+async def _crawl(campus: Campus, semester: str, output: dict):
+    output = output.setdefault(semester, {})
+    output = output.setdefault(campus.name, {})
+
+    async for page in _fetch(campus, semester):
+        _parse(page, output)
+
+
+async def _start(n_semesters: int, output_path: str):
+    semesters = (await _available_semesters())[:n_semesters]
+
+    output: Dict = {}
+    tasks = (_crawl(c, s, output) for c in Campus for s in semesters)
+    await asyncio.gather(*tasks)
+
+    with open(output_path, "w") as f:
+        json.dump(output, f)
+
+
+def run(n_semesters: int, output_path: str):
+    asyncio.run(_start(n_semesters, output_path))
