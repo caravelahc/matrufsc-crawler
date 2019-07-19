@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "matrufsc-crawler"
-version = "0.1.0"
+version = "0.2.0"
 description = ""
 authors = ["Cauê Baasch de Souza <cauebs@pm.me>"]
 license = "MIT"
