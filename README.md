@@ -12,6 +12,8 @@ poetry install
 poetry run matrufsc-crawler ./db.json
 ```
 
+If you have `pip>=19` installed, it already supports PEP517 build backends, so you can just pip install it.
+
 # Usage as library
 ```python
 import matrufsc_crawler as crawler
