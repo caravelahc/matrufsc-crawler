@@ -2,7 +2,10 @@
 name = "matrufsc-crawler"
 version = "0.2.0"
 description = ""
-authors = ["Cauê Baasch de Souza <cauebs@pm.me>"]
+authors = [
+    "Cauê Baasch de Souza <cauebs@pm.me>",
+    "Artur Barichello <artur@barichello.me>"
+]
 license = "GPL-3.0"
 
 [tool.poetry.dependencies]
