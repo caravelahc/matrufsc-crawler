@@ -1,15 +1,12 @@
 import asyncio
-import json
 import re
-
 from enum import Enum
 from math import ceil
-from typing import List, Dict, Union, Optional, AsyncIterator
+from typing import AsyncIterator, Dict, List, Optional, Union
 
 from aiohttp import ClientSession
 from bs4 import BeautifulSoup
 from yarl import URL
-
 
 CAGR = URL("https://cagr.sistemas.ufsc.br/modules/comunidade/cadastroTurmas/")
 
@@ -174,16 +171,12 @@ async def _crawl(campus: Campus, semester: str, output: dict):
         _parse(page, output)
 
 
-async def _start(n_semesters: int, output_path: str):
-    semesters = (await _available_semesters())[:n_semesters]
+async def start(num_semesters: int):
+    semesters = (await _available_semesters())[:num_semesters]
 
     output: Dict = {}
+
     tasks = (_crawl(c, s, output) for c in Campus for s in semesters)
     await asyncio.gather(*tasks)
 
-    with open(output_path, "w") as f:
-        json.dump(output, f)
-
-
-def run(n_semesters: int, output_path: str):
-    asyncio.run(_start(n_semesters, output_path))
+    return output
